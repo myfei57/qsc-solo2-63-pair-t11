@@ -239,6 +239,150 @@ class LoadRecord:
 
 
 @dataclass(frozen=True)
+class OverflowBag:
+    """One bag the overflow ledger is accountable for.
+
+    ``home`` never changes: ownership stays with the home terminal even while
+    the bag is physically held at the backup. ``status`` says where it is.
+    """
+
+    bag_id: str
+    home: str
+    backup: str
+    status: str
+    batch_id: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "bag_id": self.bag_id,
+            "home": self.home,
+            "backup": self.backup,
+            "status": self.status,
+            "batch_id": self.batch_id,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OverflowBag":
+        return cls(
+            bag_id=str(raw["bag_id"]),
+            home=str(raw.get("home", "")),
+            backup=str(raw.get("backup", "")),
+            status=str(raw.get("status", "")),
+            batch_id=str(raw.get("batch_id", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "OverflowBag":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class OverflowBatch:
+    """The outbound record for one transfer to the backup terminal.
+
+    It is the reconciliation bridge between the quota account and bag
+    ownership: every id in ``bag_ids`` stays owned by ``home``; ``accepted_ids``
+    is exactly the subset that physically reached the backup at some point.
+    """
+
+    id: str
+    home: str
+    backup: str
+    bag_ids: tuple[str, ...] = ()
+    accepted_ids: tuple[str, ...] = ()
+    status: str = "prepared"
+    reason: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "home": self.home,
+            "backup": self.backup,
+            "bag_ids": list(self.bag_ids),
+            "accepted_ids": list(self.accepted_ids),
+            "status": self.status,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OverflowBatch":
+        return cls(
+            id=str(raw["id"]),
+            home=str(raw.get("home", "")),
+            backup=str(raw.get("backup", "")),
+            bag_ids=tuple(str(item) for item in raw.get("bag_ids", [])),
+            accepted_ids=tuple(str(item) for item in raw.get("accepted_ids", [])),
+            status=str(raw.get("status", "prepared")),
+            reason=str(raw.get("reason", "")),
+            created_at=str(raw.get("created_at", "")),
+            updated_at=str(raw.get("updated_at", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "OverflowBatch":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class OverflowDecision:
+    """One policy judgement, kept so overflow history can be recomputed later."""
+
+    seq: int
+    at: str
+    minute: str
+    policy: str
+    action: str
+    amount: int = 0
+    basis: str = ""
+    queue: int = 0
+    projected: int = 0
+    held: int = 0
+    armed: bool = False
+    false_alarm: bool = False
+    batch_id: str = ""
+    reason: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq,
+            "at": self.at,
+            "minute": self.minute,
+            "policy": self.policy,
+            "action": self.action,
+            "amount": self.amount,
+            "basis": self.basis,
+            "queue": self.queue,
+            "projected": self.projected,
+            "held": self.held,
+            "armed": self.armed,
+            "false_alarm": self.false_alarm,
+            "batch_id": self.batch_id,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OverflowDecision":
+        return cls(
+            seq=int(raw.get("seq", 0)),
+            at=str(raw.get("at", "")),
+            minute=str(raw.get("minute", "")),
+            policy=str(raw.get("policy", "")),
+            action=str(raw.get("action", "")),
+            amount=int(raw.get("amount", 0)),
+            basis=str(raw.get("basis", "")),
+            queue=int(raw.get("queue", 0)),
+            projected=int(raw.get("projected", 0)),
+            held=int(raw.get("held", 0)),
+            armed=bool(raw.get("armed", False)),
+            false_alarm=bool(raw.get("false_alarm", False)),
+            batch_id=str(raw.get("batch_id", "")),
+            reason=str(raw.get("reason", "")),
+        )
+
+
+@dataclass(frozen=True)
 class Sequence:
     epoch: int = 0
     next_value: int = 0

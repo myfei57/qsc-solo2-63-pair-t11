@@ -9,7 +9,7 @@ never have to guess.
 from __future__ import annotations
 
 from bagsort.clock import Clock
-from bagsort.errors import QuotaError
+from bagsort.errors import ConflictError, QuotaError
 from bagsort.model.entities import Bag
 from bagsort.model.enums import BagState
 from bagsort.model.errors import unknown_bag
@@ -36,6 +36,7 @@ class Desk:
         quota: QuotaBook,
         clock: Clock,
         topology: Topology,
+        overflow: object | None = None,
     ) -> None:
         self._store = store
         self._reader = reader
@@ -45,6 +46,7 @@ class Desk:
         self._quota = quota
         self._clock = clock
         self._topology = topology
+        self._overflow = overflow
         # The desk refuses to start if the line no longer reads before it injects.
         topology.ensure_before("checkin", "tag")
         topology.ensure_before("tag", "inject")
@@ -53,10 +55,19 @@ class Desk:
         self._book.require_open(flight_id)
         if not self._quota.allowed(flight_id):
             raise QuotaError(f"flight {flight_id!r} has no sorting allowance left")
+        if self._overflow is not None:
+            bag_id = self._reader.read(barcode).bag_id
+            if self._overflow.ledger.is_configured() and not self._overflow.can_admit(bag_id):
+                raise ConflictError(
+                    f"bag {bag_id!r} is out at the backup terminal and has not "
+                    "been recalled yet; it cannot be re-booked at this station"
+                )
         committed = self._reader.commit(self._reader.read(barcode))
         self._mapping.assign(committed.bag_id, flight_id)
         if self._quota.is_limited(flight_id):
             self._quota.consume(flight_id)
+        if self._overflow is not None and self._overflow.ledger.is_configured():
+            self._overflow.admit(committed.bag_id)
         bag = self._store.state().bags[committed.bag_id]
         return self._injector.accept(bag)
 

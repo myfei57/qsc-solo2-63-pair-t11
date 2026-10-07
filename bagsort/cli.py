@@ -48,6 +48,19 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--cycles", type=int, default=6, help="bags to check in")
     demo.add_argument("--persist", action="store_true", help="write a snapshot afterwards")
 
+    overflow = commands.add_parser(
+        "overflow", help="compare reactive/predictive/hybrid overflow policies"
+    )
+    overflow.add_argument(
+        "--snapshot-dir", default="var/overflow-snapshots", help="snapshot archive directory"
+    )
+    overflow.add_argument(
+        "--policies",
+        default="reactive,hybrid,predictive",
+        help="comma separated policies to compare",
+    )
+    overflow.add_argument("--persist", action="store_true", help="write a journal snapshot afterwards")
+
     commands.add_parser("report", help="print the plant report")
     commands.add_parser("status", help="print the store status")
     commands.add_parser("export", help="print audit and sort records as CSV")
@@ -92,6 +105,22 @@ def _command_demo(store: Store, plant: Plant, args: argparse.Namespace) -> int:
     if args.persist:
         store.persist()
     return 0 if invariants_hold(summary) else 1
+
+
+def _command_overflow(store: Store, plant: Plant, args: argparse.Namespace) -> int:
+    from bagsort.overflow.scenario import compare
+
+    policies = tuple(part.strip() for part in args.policies.split(",") if part.strip())
+    results = compare(args.snapshot_dir, policies=policies)
+    payload = {
+        "rows": [result.as_dict() for result in results],
+        "snapshot_dir": args.snapshot_dir,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    if args.persist:
+        store.persist()
+    healthy = all(result.chain_ok and result.reconciled for result in results)
+    return 0 if healthy else 1
 
 
 def _command_report(plant: Plant) -> int:
@@ -153,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         return _command_serve(store, plant, args)
     if args.command == "demo":
         return _command_demo(store, plant, args)
+    if args.command == "overflow":
+        return _command_overflow(store, plant, args)
     if args.command == "report":
         return _command_report(plant)
     if args.command == "status":

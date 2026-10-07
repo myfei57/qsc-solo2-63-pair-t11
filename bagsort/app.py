@@ -7,6 +7,7 @@ lets the CLI drive the same operations the HTTP API exposes.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
@@ -26,6 +27,13 @@ from bagsort.model.errors import unknown_bag
 from bagsort.ns.chutes import ChuteRegistry
 from bagsort.ns.namespace import Namespace
 from bagsort.ns.topology import handling_line
+from bagsort.overflow.archive import SnapshotArchive
+from bagsort.overflow.controller import OverflowController
+from bagsort.overflow.forecast import ArrivalForecast
+from bagsort.overflow.history import recompute as overflow_recompute
+from bagsort.overflow.history import summary as overflow_summary
+from bagsort.overflow.policy import build_policy
+from bagsort.overflow.reconcile import reconcile as overflow_reconcile
 from bagsort.quota.quota import QuotaBook
 from bagsort.recheck.queue import RecheckQueue
 from bagsort.reporting.report import PlantReport
@@ -69,6 +77,8 @@ class Plant:
     quota: QuotaBook
     audit: AuditChain
     report: PlantReport
+    overflow: OverflowController
+    overflow_archive: SnapshotArchive
 
     @property
     def topology(self):
@@ -82,8 +92,20 @@ class Plant:
         store: Store,
         terminal: str = DEFAULT_TERMINAL,
         clock: Clock | None = None,
+        overflow_backup: str = "T2",
+        overflow_snapshot_dir: str = "",
+        overflow_policy: str = "hybrid",
+        home_capacity: int = 60,
+        backup_capacity: int = 120,
+        service_rate: int = 10,
     ) -> "Plant":
         clock = clock or Clock()
+        # Default the forensic archive to a directory next to the journal, so
+        # snapshots and the state file they describe travel together.
+        if not overflow_snapshot_dir:
+            overflow_snapshot_dir = os.path.join(
+                os.path.dirname(store.path) or ".", "overflow-snapshots"
+            )
         namespace = Namespace(terminal)
         registry = ChuteRegistry()
         bus = EventBus()
@@ -101,7 +123,28 @@ class Plant:
         sorter = Sorter(store, mapping, chutes, clock, VerdictTracker())
         injector = Injector(store, book, sorter, clock)
         quota = QuotaBook(store, clock)
-        desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
+
+        overflow_archive = SnapshotArchive(overflow_snapshot_dir)
+        overflow = OverflowController(
+            store,
+            clock,
+            build_policy(overflow_policy),
+            overflow_archive,
+            forecast=ArrivalForecast(),
+            service_rate=service_rate,
+            bus=bus,
+        )
+        desk = Desk(
+            store,
+            reader,
+            book,
+            mapping,
+            injector,
+            quota,
+            clock,
+            handling_line(),
+            overflow=overflow,
+        )
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
@@ -117,12 +160,16 @@ class Plant:
             "chute.assigned",
             "belt.switched",
             "bag.remapped",
+            "overflow.transferred",
+            "overflow.rolled_back",
+            "overflow.recalled",
         ):
             bus.subscribe(topic, audit_subscriber)
 
         report = PlantReport(
             store, book, chutes, belt, quota, audit, namespace, handling_line()
         )
+
         return cls(
             store=store,
             clock=clock,
@@ -147,6 +194,8 @@ class Plant:
             quota=quota,
             audit=audit,
             report=report,
+            overflow=overflow,
+            overflow_archive=overflow_archive,
         )
 
     # -- operator operations ----------------------------------------------
@@ -243,6 +292,63 @@ class Plant:
     def set_quota(self, flight_id: str, limit: int) -> int:
         return self.quota.set_limit(flight_id, limit)
 
+    # -- overflow diversion -------------------------------------------------
+
+    def overflow_configure(
+        self, backup: str, home_capacity: int, backup_capacity: int
+    ) -> dict[str, object]:
+        self.overflow.configure(
+            self.namespace.terminal, backup, home_capacity, backup_capacity
+        )
+        return self.overflow.status()
+
+    def overflow_admit(self, bag_id: str) -> str:
+        return self.overflow.admit(bag_id)
+
+    def overflow_release(self, bag_id: str) -> None:
+        self.overflow.depart_home(bag_id)
+
+    def overflow_transfer(
+        self,
+        amount: int,
+        accepted_ids: list[str] | None = None,
+        fail_remaining: bool = False,
+        reason: str = "manual",
+    ) -> dict[str, object]:
+        return self.overflow.transfer(
+            amount,
+            reason=reason,
+            accepted_ids=accepted_ids,
+            fail_remaining=fail_remaining,
+        )
+
+    def overflow_interrupt(self, batch_id: str) -> dict[str, object]:
+        return self.overflow.interrupt(batch_id)
+
+    def overflow_recall(self, batch_id: str | None = None) -> dict[str, object]:
+        return self.overflow.recall(batch_id)
+
+    def overflow_tick(self, arrivals: float = 0.0) -> dict[str, object]:
+        return self.overflow.tick(arrivals=arrivals).as_dict()
+
+    def overflow_set_advisory(self, arrivals: float) -> None:
+        self.overflow.set_advisory(arrivals)
+
+    def overflow_status(self) -> dict[str, object]:
+        return self.overflow.status()
+
+    def overflow_reconcile(self) -> dict[str, object]:
+        return self.overflow.reconcile()
+
+    def overflow_snapshots_verify(self) -> dict[str, object]:
+        return self.overflow_archive.verify()
+
+    def overflow_history(self, needed_window: int = 6) -> dict[str, object]:
+        history = overflow_recompute(self.store.entries(), needed_window=needed_window)
+        payload = history.as_dict()
+        payload["summary"] = overflow_summary(history)
+        return payload
+
     def verify(self) -> bool:
         return self.audit.verify()
 
@@ -259,6 +365,9 @@ class _AuditSubscriber:
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
         "bag.remapped": ("remap", "checkin"),
+        "overflow.transferred": ("overflow_transfer", "audit"),
+        "overflow.rolled_back": ("overflow_rollback", "audit"),
+        "overflow.recalled": ("overflow_recall", "audit"),
     }
 
     def __init__(self, audit: AuditChain) -> None:
@@ -269,15 +378,16 @@ class _AuditSubscriber:
         if mapping is None:
             raise ConflictError(f"no audit mapping for topic {event.topic!r}")
         kind, stage = mapping
-        subject = str(
-            event.payload.get("bag_id")
-            or event.payload.get("flight_id")
-            or event.payload.get("carousel")
-            or ""
-        )
         detail = {
             key: value
             for key, value in event.payload.items()
-            if key not in {"bag_id", "flight_id"}
+            if key not in {"bag_id", "flight_id", "batch_id"}
         }
+        subject = str(
+            event.payload.get("bag_id")
+            or event.payload.get("flight_id")
+            or event.payload.get("batch_id")
+            or event.payload.get("carousel")
+            or ""
+        )
         self._audit.record(kind, subject, stage, detail)

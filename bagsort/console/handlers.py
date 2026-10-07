@@ -659,6 +659,121 @@ def handle_quota_release(server, request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# overflow diversion
+# ---------------------------------------------------------------------------
+
+
+def handle_overflow_status(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_status())
+
+
+def handle_overflow_configure(server, request: Request) -> Response:
+    plant = _plant(server)
+    return json_response(
+        plant.overflow_configure(
+            backup=request.required("backup"),
+            home_capacity=request.int_field("home_capacity"),
+            backup_capacity=request.int_field("backup_capacity"),
+        )
+    )
+
+
+def handle_overflow_capacity(server, request: Request) -> Response:
+    plant = _plant(server)
+    terminal = request.required("terminal")
+    plant.overflow.ledger.set_capacity(terminal, request.int_field("capacity"))
+    return json_response(plant.overflow_status())
+
+
+def handle_overflow_terminals(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow.ledger.terminal_rows())
+
+
+def handle_overflow_queue(server, request: Request) -> Response:
+    ledger = _plant(server).overflow.ledger
+    return json_response([bag.as_dict() for bag in ledger.home_queue()])
+
+
+def handle_overflow_held(server, request: Request) -> Response:
+    ledger = _plant(server).overflow.ledger
+    return json_response([bag.as_dict() for bag in ledger.held_bags()])
+
+
+def handle_overflow_bag(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow.ledger.bag(request.param("id")).as_dict())
+
+
+def handle_overflow_admit(server, request: Request) -> Response:
+    plant = _plant(server)
+    bag_id = plant.overflow_admit(request.required("bag_id"))
+    return json_response({"bag_id": bag_id, "status": plant.overflow.ledger.bag(bag_id).status}, status=201)
+
+
+def handle_overflow_release(server, request: Request) -> Response:
+    plant = _plant(server)
+    plant.overflow_release(request.required("bag_id"))
+    return json_response({"bag_id": request.required("bag_id"), "released": True})
+
+
+def handle_overflow_transfer(server, request: Request) -> Response:
+    plant = _plant(server)
+    raw_accepted = request.payload.get("accepted_ids")
+    accepted = [str(item) for item in raw_accepted] if isinstance(raw_accepted, list) else None
+    result = plant.overflow_transfer(
+        amount=request.int_field("amount"),
+        accepted_ids=accepted,
+        fail_remaining=request.bool_field("fail_remaining", False),
+        reason=request.str_field("reason", "manual") or "manual",
+    )
+    return json_response(result, status=201)
+
+
+def handle_overflow_interrupt(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_interrupt(request.required("batch_id")))
+
+
+def handle_overflow_recall(server, request: Request) -> Response:
+    plant = _plant(server)
+    batch_id = request.str_field("batch_id") or None
+    return json_response(plant.overflow_recall(batch_id))
+
+
+def handle_overflow_tick(server, request: Request) -> Response:
+    arrivals = float(request.payload.get("arrivals", 0) or 0)
+    advisory = request.payload.get("advisory")
+    plant = _plant(server)
+    if advisory is not None:
+        plant.overflow_set_advisory(float(advisory))
+    return json_response(plant.overflow_tick(arrivals=arrivals))
+
+
+def handle_overflow_batches(server, request: Request) -> Response:
+    return json_response([batch.as_dict() for batch in _plant(server).overflow.ledger.batches()])
+
+
+def handle_overflow_batch(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow.ledger.batch(request.param("id")).as_dict())
+
+
+def handle_overflow_decisions(server, request: Request) -> Response:
+    decisions = _plant(server).store.state().overflow_decisions
+    return json_response([item.as_dict() for item in decisions])
+
+
+def handle_overflow_history(server, request: Request) -> Response:
+    window = request.query_int("window", 6)
+    return json_response(_plant(server).overflow_history(needed_window=window))
+
+
+def handle_overflow_reconcile(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_reconcile())
+
+
+def handle_overflow_snapshots(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_snapshots_verify())
+
+
+# ---------------------------------------------------------------------------
 # audit
 # ---------------------------------------------------------------------------
 
