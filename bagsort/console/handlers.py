@@ -659,6 +659,155 @@ def handle_quota_release(server, request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# overflow
+# ---------------------------------------------------------------------------
+
+
+def handle_overflow_configure(server, request: Request) -> Response:
+    plant = _plant(server)
+    policy_keys = (
+        "mode",
+        "high_water",
+        "recover_water",
+        "forecast_horizon",
+        "forecast_fire_rate",
+        "transfer_cap",
+        "cooldown_ticks",
+    )
+    policy = {key: request.payload[key] for key in policy_keys if key in request.payload}
+    settings = plant.configure_overflow(
+        backup_terminal=request.required("backup_terminal"),
+        grant=request.int_field("grant", -1),
+        **policy,
+    )
+    return json_response(settings, status=201)
+
+
+def handle_overflow_policy(server, request: Request) -> Response:
+    overflow = _plant(server).overflow
+    return json_response(
+        {
+            "settings": overflow.settings(),
+            "accounts": overflow.account.accounts(),
+            "outbound": overflow.outbound_count(),
+            "queue_length": overflow._home_queue_length(),
+            "arrivals": [sample.as_dict() for sample in overflow.arrivals()],
+            "evidence_dir": overflow._evidence.directory,
+        }
+    )
+
+
+def handle_overflow_arrival(server, request: Request) -> Response:
+    sample = _plant(server).record_arrival(request.int_field("count", 1))
+    return json_response(sample.as_dict(), status=201)
+
+
+def handle_overflow_evaluate(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_decision())
+
+
+def handle_overflow_tick(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_tick())
+
+
+def handle_overflow_send(server, request: Request) -> Response:
+    plant = _plant(server)
+    raw_bags = request.payload.get("bag_ids") or []
+    bag_ids = [str(item) for item in raw_bags] if isinstance(raw_bags, list) else None
+    batch = plant.send_overflow(
+        request.int_field("count", 1),
+        reason=request.str_field("reason", "manual"),
+        bag_ids=bag_ids,
+    )
+    return json_response(batch.as_dict(), status=201)
+
+
+def handle_overflow_rollback(server, request: Request) -> Response:
+    batch = _plant(server).rollback_overflow(
+        request.param("id"), request.str_field("reason", "outbound_interrupted")
+    )
+    return json_response(batch.as_dict())
+
+
+def handle_overflow_return_plan(server, request: Request) -> Response:
+    return json_response(
+        _plant(server).plan_return(
+            batch_id=request.str_field("batch_id"),
+            limit=request.int_field("limit", 0),
+        )
+    )
+
+
+def handle_overflow_return(server, request: Request) -> Response:
+    plant = _plant(server)
+    raw_bags = request.payload.get("bag_ids") or []
+    bag_ids = [str(item) for item in raw_bags] if isinstance(raw_bags, list) else None
+    return json_response(
+        plant.return_overflow(bag_ids=bag_ids, batch_id=request.str_field("batch_id"))
+    )
+
+
+def handle_overflow_recover(server, request: Request) -> Response:
+    return json_response(
+        _plant(server).recover_overflow(
+            batch_id=request.str_field("batch_id"),
+            limit=request.int_field("limit", 0),
+        )
+    )
+
+
+def handle_overflow_batches(server, request: Request) -> Response:
+    overflow = _plant(server).overflow
+    batches = overflow.history.batches(request.query_str("status"))
+    return json_response([batch.as_dict() for batch in batches])
+
+
+def handle_overflow_batch(server, request: Request) -> Response:
+    batch = _plant(server).overflow.history.batch(request.param("id"))
+    if batch is None:
+        return json_response({"error": "not found"}, status=404)
+    return json_response(batch.as_dict())
+
+
+def handle_overflow_records(server, request: Request) -> Response:
+    overflow = _plant(server).overflow
+    bag_id = request.query_str("bag_id")
+    if bag_id:
+        record = overflow.history.record_for(bag_id)
+        if record is None:
+            return json_response({"error": "not found"}, status=404)
+        return json_response(record.as_dict())
+    records = overflow.history.records(request.query_str("state"))
+    return json_response([record.as_dict() for record in records])
+
+
+def handle_overflow_queue(server, request: Request) -> Response:
+    overflow = _plant(server).overflow
+    bags = overflow.home_queue()
+    return json_response(
+        {
+            "home_terminal": overflow._home,
+            "queue_length": len(bags),
+            "bags": [bag.as_dict() for bag in bags],
+        }
+    )
+
+
+def handle_overflow_history(server, request: Request) -> Response:
+    return json_response(_plant(server).overflow_history(request.query_str("at")))
+
+
+def handle_overflow_reconcile(server, request: Request) -> Response:
+    result = _plant(server).overflow_reconcile()
+    return json_response(result, status=200 if result["ok"] else 409)
+
+
+def handle_overflow_verify_evidence(server, request: Request) -> Response:
+    checked = _plant(server).overflow.verify_evidence()
+    return json_response({"verified": checked})
+
+
+# ---------------------------------------------------------------------------
 # audit
 # ---------------------------------------------------------------------------
 

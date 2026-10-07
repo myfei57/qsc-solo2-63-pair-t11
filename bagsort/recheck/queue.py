@@ -8,6 +8,7 @@ instead of silently reordering it.
 from __future__ import annotations
 
 from bagsort.clock import Clock
+from bagsort.errors import OrderingError
 from bagsort.model.entities import Bag
 from bagsort.model.enums import BagState
 from bagsort.model.errors import unknown_bag
@@ -23,6 +24,10 @@ class RecheckQueue:
         self._clock = clock
 
     def enqueue(self, bag: Bag) -> int:
+        if bag.state is BagState.OUTBOUND:
+            raise OrderingError(
+                f"bag {bag.id!r} is out at {bag.terminal!r}; it cannot recheck here"
+            )
         updated = bag.evolved(state=BagState.RECHECKED)
         at = self._clock.now_iso()
         with self._store.session() as session:

@@ -52,6 +52,10 @@ class Belt:
         return self.describe()
 
     def place(self, bag: Bag) -> int:
+        if bag.state is BagState.OUTBOUND:
+            raise OrderingError(
+                f"bag {bag.id!r} is out at {bag.terminal!r}; it cannot ride this belt"
+            )
         with self._store.session() as session:
             if bag.id not in session.state.belt_on_carousel:
                 session.state.belt_on_carousel.append(bag.id)

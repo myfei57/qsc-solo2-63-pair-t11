@@ -11,11 +11,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .entities import (
+    ArrivalSample,
     AuditEntry,
     Bag,
     ChuteAssignment,
+    EvidenceAnchor,
+    ExternalRecord,
     Flight,
     LoadRecord,
+    OverflowBatch,
     Sequence,
     SortRecord,
     TransferCommand,
@@ -42,6 +46,13 @@ class State:
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
+    overflow_batches: list[OverflowBatch] = field(default_factory=list)
+    external_records: list[ExternalRecord] = field(default_factory=list)
+    overflow_capacity: dict[str, int] = field(default_factory=dict)
+    overflow_granted: dict[str, int] = field(default_factory=dict)
+    overflow_policy: dict[str, Any] = field(default_factory=dict)
+    arrival_samples: list[ArrivalSample] = field(default_factory=list)
+    evidence_anchors: list[EvidenceAnchor] = field(default_factory=list)
 
     def copy(self) -> "State":
         return State(
@@ -60,6 +71,13 @@ class State:
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
+            overflow_batches=list(self.overflow_batches),
+            external_records=list(self.external_records),
+            overflow_capacity=dict(self.overflow_capacity),
+            overflow_granted=dict(self.overflow_granted),
+            overflow_policy=dict(self.overflow_policy),
+            arrival_samples=list(self.arrival_samples),
+            evidence_anchors=list(self.evidence_anchors),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -83,6 +101,13 @@ class State:
                 "batch": self.belt_batch,
                 "on_carousel": list(self.belt_on_carousel),
             },
+            "overflow_batches": [batch.as_dict() for batch in self.overflow_batches],
+            "external_records": [record.as_dict() for record in self.external_records],
+            "overflow_capacity": dict(sorted(self.overflow_capacity.items())),
+            "overflow_granted": dict(sorted(self.overflow_granted.items())),
+            "overflow_policy": dict(sorted(self.overflow_policy.items())),
+            "arrival_samples": [sample.as_dict() for sample in self.arrival_samples],
+            "evidence_anchors": [anchor.as_dict() for anchor in self.evidence_anchors],
         }
 
 def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
@@ -153,6 +178,34 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.belt_on_carousel = []
         state.belt_carousel = str(payload.get("carousel", state.belt_carousel))
         state.belt_batch = int(payload.get("batch", state.belt_batch))
+    elif kind == "overflow.batch.put":
+        batch = OverflowBatch.from_dict(payload["batch"])
+        state.overflow_batches = [
+            item for item in state.overflow_batches if item.id != batch.id
+        ]
+        state.overflow_batches.append(batch)
+    elif kind == "overflow.record.put":
+        record = ExternalRecord.from_dict(payload["record"])
+        state.external_records = [
+            item
+            for item in state.external_records
+            if not (item.bag_id == record.bag_id and item.batch_id == record.batch_id)
+        ]
+        state.external_records.append(record)
+    elif kind == "overflow.capacity.set":
+        state.overflow_capacity[str(payload["backup_terminal"])] = int(payload["amount"])
+    elif kind == "overflow.granted":
+        terminal = str(payload["backup_terminal"])
+        base = int(state.overflow_granted.get(terminal, 0))
+        state.overflow_granted[terminal] = base + int(payload["delta"])
+    elif kind == "overflow.policy.set":
+        state.overflow_policy = dict(payload["policy"])
+    elif kind == "overflow.arrival":
+        state.arrival_samples.append(
+            ArrivalSample(at=str(payload["at"]), count=int(payload["count"]))
+        )
+    elif kind == "overflow.evidence":
+        state.evidence_anchors.append(EvidenceAnchor.from_dict(payload["anchor"]))
     else:  # pragma: no cover - guards against a typo in a new command kind
         raise ValidationError(f"unknown journal command {kind!r}")
 

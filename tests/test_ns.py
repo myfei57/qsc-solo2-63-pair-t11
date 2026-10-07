@@ -56,7 +56,7 @@ def test_topology_enforces_the_handling_order():
     line = handling_line()
     assert line.before("tag", "sorter") is True
     assert line.before("sorter", "tag") is False
-    assert line.count() == 8
+    assert line.count() == 9
     assert "tag -> inject" in line.describe()
 
 
@@ -69,6 +69,6 @@ def test_topology_reports_next_and_following_stages():
     line = handling_line()
     assert line.next_stage("tag") == "inject"
     assert line.next_stage("audit") is None
-    assert line.following("chute") == ("recheck", "belt", "audit")
+    assert line.following("chute") == ("recheck", "belt", "overflow", "audit")
     assert line.contains("recheck") is True
     assert line.index_of("missing") == -1

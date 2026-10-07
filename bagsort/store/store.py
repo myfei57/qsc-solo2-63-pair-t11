@@ -88,6 +88,9 @@ class Store:
             "transfer_commands": len(state.transfer_commands),
             "load_records": len(state.load_records),
             "audit": len(state.audit),
+            "overflow_batches": len(state.overflow_batches),
+            "external_records": len(state.external_records),
+            "evidence_anchors": len(state.evidence_anchors),
         }
 
     # -- write side --------------------------------------------------------

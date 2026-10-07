@@ -8,6 +8,7 @@ stores the bag and makes the reading visible to dispatch.
 from __future__ import annotations
 
 from bagsort.clock import Clock
+from bagsort.errors import ConflictError
 from bagsort.model.entities import Bag, Reading, Sequence
 from bagsort.model.enums import BagState
 from bagsort.model.validate import validate_reading
@@ -53,6 +54,15 @@ class TagReader:
 
         validate_reading(reading)
         state = self._store.state()
+        terminal = self._ns.terminal
+        existing = state.bags.get(reading.bag_id)
+        if existing is not None and existing.state is BagState.OUTBOUND:
+            # The bag is physically at a backup terminal; accepting it again
+            # here would book the same luggage twice and split ownership.
+            raise ConflictError(
+                f"barcode {reading.barcode!r} is still out at "
+                f"{existing.terminal!r}; recover it before checking in again"
+            )
         allocation = allocate(state.sequence)
         bag = Bag(
             id=reading.bag_id,
@@ -60,6 +70,8 @@ class TagReader:
             sequence=allocation.value,
             epoch=allocation.sequence.epoch,
             state=BagState.CHECKED_IN,
+            home_terminal=terminal,
+            terminal=terminal,
         )
         with self._store.session() as session:
             session.state.sequence = allocation.sequence

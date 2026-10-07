@@ -73,6 +73,8 @@ class Bag:
     flight_id: str = ""
     chute_id: str = ""
     state: BagState = BagState.CHECKED_IN
+    home_terminal: str = ""
+    terminal: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,10 +85,14 @@ class Bag:
             "flight_id": self.flight_id,
             "chute_id": self.chute_id,
             "state": self.state.value,
+            "home_terminal": self.home_terminal,
+            "terminal": self.terminal,
         }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Bag":
+        home = str(raw.get("home_terminal", ""))
+        current = str(raw.get("terminal", ""))
         return cls(
             id=str(raw["id"]),
             barcode=str(raw.get("barcode", "")),
@@ -95,6 +101,8 @@ class Bag:
             flight_id=str(raw.get("flight_id", "")),
             chute_id=str(raw.get("chute_id", "")),
             state=BagState(raw.get("state", BagState.CHECKED_IN.value)),
+            home_terminal=home,
+            terminal=current or home,
         )
 
     def evolved(self, **changes: Any) -> "Bag":
@@ -249,6 +257,160 @@ class Sequence:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Sequence":
         return cls(epoch=int(raw.get("epoch", 0)), next_value=int(raw.get("next", 0)))
+
+
+@dataclass(frozen=True)
+class OverflowBatch:
+    """One shipment of overflow bags from the home terminal to a backup.
+
+    The status moves ``outbound`` -> ``returned`` (every bag came home and the
+    accounts were settled) or ``outbound`` -> ``rolled_back`` (an interrupted
+    outbound restored ownership without ever touching the backup accounts).
+    ``bag_ids`` is frozen at creation; an account that ever lists a bag not in
+    its batch, or a bag whose terminal disagrees with its batch status, fails
+    reconciliation.
+    """
+
+    id: str
+    backup_terminal: str
+    home_terminal: str
+    bag_ids: tuple[str, ...]
+    status: str = "outbound"
+    reason: str = ""
+    trigger: str = ""
+    created_at: str = ""
+    finished_at: str = ""
+    pre_evidence: str = ""
+    post_evidence: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "backup_terminal": self.backup_terminal,
+            "home_terminal": self.home_terminal,
+            "bag_ids": list(self.bag_ids),
+            "status": self.status,
+            "reason": self.reason,
+            "trigger": self.trigger,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "pre_evidence": self.pre_evidence,
+            "post_evidence": self.post_evidence,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OverflowBatch":
+        return cls(
+            id=str(raw["id"]),
+            backup_terminal=str(raw.get("backup_terminal", "")),
+            home_terminal=str(raw.get("home_terminal", "")),
+            bag_ids=tuple(str(item) for item in raw.get("bag_ids", [])),
+            status=str(raw.get("status", "outbound")),
+            reason=str(raw.get("reason", "")),
+            trigger=str(raw.get("trigger", "")),
+            created_at=str(raw.get("created_at", "")),
+            finished_at=str(raw.get("finished_at", "")),
+            pre_evidence=str(raw.get("pre_evidence", "")),
+            post_evidence=str(raw.get("post_evidence", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "OverflowBatch":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class ExternalRecord:
+    """One bag's entry in the external (backup terminal) ledger.
+
+    The snapshot digests are the evidence taken when the bag left and when it
+    came home, so the backup can prove it accepted exactly this bag and handed
+    exactly this bag back.
+    """
+
+    bag_id: str
+    batch_id: str
+    backup_terminal: str
+    home_terminal: str
+    state: str
+    out_at: str
+    back_at: str = ""
+    out_evidence: str = ""
+    back_evidence: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "bag_id": self.bag_id,
+            "batch_id": self.batch_id,
+            "backup_terminal": self.backup_terminal,
+            "home_terminal": self.home_terminal,
+            "state": self.state,
+            "out_at": self.out_at,
+            "back_at": self.back_at,
+            "out_evidence": self.out_evidence,
+            "back_evidence": self.back_evidence,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ExternalRecord":
+        return cls(
+            bag_id=str(raw["bag_id"]),
+            batch_id=str(raw.get("batch_id", "")),
+            backup_terminal=str(raw.get("backup_terminal", "")),
+            home_terminal=str(raw.get("home_terminal", "")),
+            state=str(raw.get("state", "outbound")),
+            out_at=str(raw.get("out_at", "")),
+            back_at=str(raw.get("back_at", "")),
+            out_evidence=str(raw.get("out_evidence", "")),
+            back_evidence=str(raw.get("back_evidence", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "ExternalRecord":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class ArrivalSample:
+    """One observed arrival count feeding the arrival predictor."""
+
+    at: str
+    count: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"at": self.at, "count": int(self.count)}
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "ArrivalSample":
+        return cls(at=str(raw.get("at", "")), count=int(raw.get("count", 0)))
+
+
+@dataclass(frozen=True)
+class EvidenceAnchor:
+    """A reference to a snapshot file, kept in the journal that snapshotted it."""
+
+    phase: str
+    ref: str
+    digest: str
+    watermark: int
+    at: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "ref": self.ref,
+            "digest": self.digest,
+            "watermark": self.watermark,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "EvidenceAnchor":
+        return cls(
+            phase=str(raw.get("phase", "")),
+            ref=str(raw.get("ref", "")),
+            digest=str(raw.get("digest", "")),
+            watermark=int(raw.get("watermark", 0)),
+            at=str(raw.get("at", "")),
+        )
 
 
 @dataclass(frozen=True)

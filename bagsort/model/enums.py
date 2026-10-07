@@ -23,10 +23,15 @@ class BagState(str, Enum):
     RECHECKED = "rechecked"
     LOADED = "loaded"
     DIVERTED = "diverted"
+    OUTBOUND = "outbound"
 
     @property
     def active(self) -> bool:
-        """Whether the bag still occupies plant capacity."""
+        """Whether the bag still occupies plant capacity.
+
+        An outbound bag occupies the *backup* terminal, not this plant, so it
+        reads as inactive here even though the luggage itself is still alive.
+        """
 
         return self in (
             BagState.CHECKED_IN,

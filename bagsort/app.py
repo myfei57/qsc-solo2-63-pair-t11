@@ -26,6 +26,8 @@ from bagsort.model.errors import unknown_bag
 from bagsort.ns.chutes import ChuteRegistry
 from bagsort.ns.namespace import Namespace
 from bagsort.ns.topology import handling_line
+from bagsort.overflow.control import OverflowControl
+from bagsort.overflow.evidence import EvidenceStore
 from bagsort.quota.quota import QuotaBook
 from bagsort.recheck.queue import RecheckQueue
 from bagsort.reporting.report import PlantReport
@@ -67,6 +69,7 @@ class Plant:
     recheck: RecheckQueue
     belt: Belt
     quota: QuotaBook
+    overflow: OverflowControl
     audit: AuditChain
     report: PlantReport
 
@@ -106,6 +109,15 @@ class Plant:
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
 
+        evidence = EvidenceStore(store.path)
+        overflow = OverflowControl(
+            store,
+            clock,
+            namespace.terminal,
+            evidence=evidence,
+            ids=IdFactory("of"),
+        )
+
         audit = AuditChain(store, clock, handling_line())
         audit_subscriber = _AuditSubscriber(audit)
         for topic in (
@@ -117,6 +129,10 @@ class Plant:
             "chute.assigned",
             "belt.switched",
             "bag.remapped",
+            "overflow.sent",
+            "overflow.rolled_back",
+            "overflow.returned",
+            "overflow.configured",
         ):
             bus.subscribe(topic, audit_subscriber)
 
@@ -145,6 +161,7 @@ class Plant:
             recheck=recheck,
             belt=belt,
             quota=quota,
+            overflow=overflow,
             audit=audit,
             report=report,
         )
@@ -243,6 +260,86 @@ class Plant:
     def set_quota(self, flight_id: str, limit: int) -> int:
         return self.quota.set_limit(flight_id, limit)
 
+    # -- overflow ----------------------------------------------------------
+
+    def configure_overflow(self, backup_terminal: str, grant: int, **policy) -> dict:
+        settings = self.overflow.configure(
+            backup_terminal=backup_terminal, grant=grant, **policy
+        )
+        self.bus.publish(
+            "overflow.configured",
+            backup_terminal=backup_terminal,
+            mode=settings.get("mode"),
+            grant=grant,
+        )
+        return settings
+
+    def record_arrival(self, count: int = 1):
+        return self.overflow.record_arrival(count)
+
+    def overflow_decision(self) -> dict:
+        return self.overflow.evaluate().as_dict()
+
+    def overflow_tick(self) -> dict:
+        result = self.overflow.run_once()
+        decision = result["decision"]
+        if decision["action"] == "transfer" and "batch" in result:
+            self.bus.publish(
+                "overflow.sent",
+                batch_id=result["batch"]["id"],
+                backup_terminal=result["batch"]["backup_terminal"],
+                count=len(result["batch"]["bag_ids"]),
+            )
+        return result
+
+    def send_overflow(self, count: int, reason: str = "manual", bag_ids=None):
+        batch = self.overflow.send_out(count, reason=reason, bag_ids=bag_ids)
+        self.bus.publish(
+            "overflow.sent",
+            batch_id=batch.id,
+            backup_terminal=batch.backup_terminal,
+            count=len(batch.bag_ids),
+        )
+        return batch
+
+    def rollback_overflow(self, batch_id: str, reason: str = "outbound_interrupted"):
+        batch = self.overflow.rollback_batch(batch_id, reason=reason)
+        self.bus.publish(
+            "overflow.rolled_back",
+            batch_id=batch.id,
+            backup_terminal=batch.backup_terminal,
+            count=len(batch.bag_ids),
+            reason=reason,
+        )
+        return batch
+
+    def plan_return(self, batch_id: str = "", limit: int = 0) -> dict:
+        return self.overflow.request_return(batch_id=batch_id, limit=limit)
+
+    def return_overflow(self, bag_ids=None, batch_id: str = "") -> dict:
+        result = self.overflow.return_bags(bag_ids=bag_ids, batch_id=batch_id)
+        self.bus.publish(
+            "overflow.returned",
+            count=len(result["returned"]),
+            batches=",".join(result["batches"]),
+        )
+        return result
+
+    def recover_overflow(self, batch_id: str = "", limit: int = 0) -> dict:
+        result = self.overflow.recover_when_ready(batch_id=batch_id, limit=limit)
+        self.bus.publish(
+            "overflow.returned",
+            count=len(result["returned"]),
+            batches=",".join(result["batches"]),
+        )
+        return result
+
+    def overflow_reconcile(self) -> dict:
+        return self.overflow.reconcile()
+
+    def overflow_history(self, cutoff: str = "") -> dict:
+        return self.overflow.history.recompute(cutoff)
+
     def verify(self) -> bool:
         return self.audit.verify()
 
@@ -259,6 +356,10 @@ class _AuditSubscriber:
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
         "bag.remapped": ("remap", "checkin"),
+        "overflow.sent": ("overflow_send", "overflow"),
+        "overflow.rolled_back": ("overflow_rollback", "overflow"),
+        "overflow.returned": ("overflow_return", "overflow"),
+        "overflow.configured": ("overflow_config", "overflow"),
     }
 
     def __init__(self, audit: AuditChain) -> None:

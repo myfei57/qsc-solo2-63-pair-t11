@@ -55,6 +55,10 @@ class Sorter:
     def dispatch(self, bag: Bag, reading: Reading) -> SortRecord:
         if not reading.committed:
             raise ConflictError(f"barcode read for {bag.barcode!r} is not committed")
+        if bag.state is BagState.OUTBOUND:
+            raise ConflictError(
+                f"bag {bag.id!r} is out at {bag.terminal!r}; it cannot be sorted here"
+            )
         if self._log.was_executed(bag.id):
             raise ConflictError(f"bag {bag.id!r} has already been sorted")
         detail = self.route(bag.id)
@@ -80,6 +84,10 @@ class Sorter:
         return record
 
     def divert(self, bag: Bag) -> Bag:
+        if bag.state is BagState.OUTBOUND:
+            raise ConflictError(
+                f"bag {bag.id!r} is out at {bag.terminal!r}; it cannot be diverted here"
+            )
         updated = bag.evolved(state=BagState.DIVERTED)
         with self._store.session() as session:
             session.state.bags[updated.id] = updated
